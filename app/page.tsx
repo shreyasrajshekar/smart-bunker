@@ -8,11 +8,40 @@ type SubjectData = {
   tca?: number;
 };
 
+type FileInputConfig = {
+  label: string;
+  type: "file";
+  setter: React.Dispatch<React.SetStateAction<File | null>>;
+  color: string;
+};
+
+type DateInputConfig = {
+  label: string;
+  type: "date";
+  setter: React.Dispatch<React.SetStateAction<string>>;
+  color: string;
+};
+
+type InputConfig = FileInputConfig | DateInputConfig;
+
+// FIX: result typing instead of any[]
+type Result = {
+  subject: string;
+  classesPerWeek: number;
+  weeksLeft: number;
+  futureClasses: number;
+  tcc: number;
+  tca: number;
+  minRequired: number;
+  bunkable: number;
+  projectedAttendance: string;
+};
+
 export default function Page() {
   const [timetableImage, setTimetableImage] = useState<File | null>(null);
   const [attendanceImage, setAttendanceImage] = useState<File | null>(null);
   const [examDate, setExamDate] = useState("");
-  const [results, setResults] = useState<any[]>([]);
+  const [results, setResults] = useState<Result[]>([]); // FIX
   const [loading, setLoading] = useState(false);
 
   const subjectsList = [
@@ -25,6 +54,38 @@ export default function Page() {
     "HSS133",
   ];
 
+  const inputs: InputConfig[] = [
+    {
+      label: "Timetable Pic",
+      type: "file",
+      setter: setTimetableImage,
+      color: "#C3FFAD",
+    },
+    {
+      label: "Attendance Pic",
+      type: "file",
+      setter: setAttendanceImage,
+      color: "#FFADF0",
+    },
+    {
+      label: "When do exams start?",
+      type: "date",
+      setter: setExamDate,
+      color: "#ADF0FF",
+    },
+  ];
+
+  const handleInputChange = (
+    input: InputConfig,
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    if (input.type === "file") {
+      input.setter(e.currentTarget.files?.[0] ?? null);
+    } else {
+      input.setter(e.currentTarget.value);
+    }
+  };
+
   const toBase64 = (file: File) =>
     new Promise<string>((res, rej) => {
       const reader = new FileReader();
@@ -33,7 +94,11 @@ export default function Page() {
       reader.readAsDataURL(file);
     });
 
-  const callGemini = async (file: File, mode: "timetable" | "attendance") => {
+  // FIX: explicit return type
+  const callGemini = async (
+    file: File,
+    mode: "timetable" | "attendance"
+  ): Promise<SubjectData[]> => {
     const base64 = (await toBase64(file)).split(",")[1];
 
     const prompt =
@@ -88,12 +153,7 @@ Return ONLY JSON in this exact format:
     let text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
     text = text.replace(/```json|```/g, "").trim();
 
-    try {
-      return JSON.parse(text).subjects;
-    } catch (e) {
-      console.error("Failed to parse Gemini output:", text);
-      throw new Error("Gemini output invalid JSON");
-    }
+    return JSON.parse(text).subjects;
   };
 
   const handleAnalyze = async () => {
@@ -101,6 +161,7 @@ Return ONLY JSON in this exact format:
       alert("Upload both images and select exam date");
       return;
     }
+
     setLoading(true);
     try {
       const timetable = await callGemini(timetableImage, "timetable");
@@ -114,16 +175,33 @@ Return ONLY JSON in this exact format:
         )
       );
 
-      const subjectResults = timetable.map((sub: any) => {
-        const att = attendance.find((a: any) => a.name === sub.name);
-        if (!att) return { subject: sub.name, bunkable: 0 };
+      const subjectResults: Result[] = timetable.map((sub) => {
+        const att = attendance.find((a) => a.name === sub.name);
+
+        if (!att || !sub.classesPerWeek) {
+          return {
+            subject: sub.name,
+            classesPerWeek: 0,
+            weeksLeft,
+            futureClasses: 0,
+            tcc: 0,
+            tca: 0,
+            minRequired: 0,
+            bunkable: 0,
+            projectedAttendance: "0",
+          };
+        }
 
         const futureClasses = sub.classesPerWeek * weeksLeft;
-        const totalAfter = att.tcc + futureClasses;
+        const totalAfter = att.tcc! + futureClasses;
         const minRequired = Math.ceil(0.85 * totalAfter);
-        const bunkable = Math.max(0, futureClasses - (minRequired - att.tca));
+        const bunkable = Math.max(
+          0,
+          futureClasses - (minRequired - att.tca!)
+        );
+
         const projectedAttendance = (
-          ((att.tca + (futureClasses - bunkable)) / totalAfter) *
+          ((att.tca! + (futureClasses - bunkable)) / totalAfter) *
           100
         ).toFixed(2);
 
@@ -132,8 +210,8 @@ Return ONLY JSON in this exact format:
           classesPerWeek: sub.classesPerWeek,
           weeksLeft,
           futureClasses,
-          tcc: att.tcc,
-          tca: att.tca,
+          tcc: att.tcc!,
+          tca: att.tca!,
           minRequired,
           bunkable,
           projectedAttendance,
@@ -142,7 +220,6 @@ Return ONLY JSON in this exact format:
 
       setResults(subjectResults);
     } catch (e: any) {
-      console.error(e);
       alert("Analysis failed: " + e.message);
     } finally {
       setLoading(false);
@@ -151,136 +228,102 @@ Return ONLY JSON in this exact format:
 
   return (
     <main
-  style={{
-    padding: "40px 16px",
-    maxWidth: 950,
-    margin: "auto",
-    fontFamily: "'Space Grotesk', 'Inter', sans-serif", // A very "human/edgy" font
-    background: "#FFFBF2", // Warm paper-like background
-    minHeight: "100vh",
-    color: "#1A1A1A",
-  }}
->
-  {/* STICKER-STYLE HEADER */}
-  <header style={{ textAlign: "center", marginBottom: 50, position: "relative" }}>
-    <div style={{
-      display: 'inline-block',
-      padding: '4px 12px',
-      background: '#FFD600',
-      border: '3px solid #1A1A1A',
-      transform: 'rotate(-2deg) translateY(10px)',
-      fontWeight: 900,
-      fontSize: 14,
-      boxShadow: '4px 4px 0px #1A1A1A',
-      zIndex: 2,
-      position: 'relative'
-    }}>
-      THE ULTIMATE HACK
-    </div>
-    <h1
       style={{
-        fontSize: "clamp(2.2rem, 10vw, 4.5rem)",
-        fontWeight: 900,
-        margin: "0 auto",
-        lineHeight: 0.9,
-        textTransform: "uppercase",
-        letterSpacing: "-2px",
+        padding: "40px 16px",
+        maxWidth: 950,
+        margin: "auto",
+        fontFamily: "'Space Grotesk', 'Inter', sans-serif",
+        background: "#FFFBF2",
+        minHeight: "100vh",
         color: "#1A1A1A",
       }}
     >
-      Smart <br /> 
-      <span style={{ color: '#6366f1', textDecoration: 'underline wavy #FF6B6B' }}>Bunker</span>
-    </h1>
-    <p style={{ 
-      marginTop: 20, 
-      fontSize: 18, 
-      fontWeight: 500, 
-      fontStyle: 'italic',
-      color: "#4A4A4A" 
-    }}>
-      "Because 100% attendance is a myth."
-    </p>
-  </header>
-
-  {/* ROUGH-CUT INPUT SECTION */}
-  <section
-    style={{
-      background: "#fff",
-      border: "4px solid #1A1A1A",
-      boxShadow: "12px 12px 0px #1A1A1A",
-      padding: "clamp(20px, 5vw, 40px)",
-      borderRadius: "2px", // Sharp corners for that "manual" look
-      marginBottom: 60
-    }}
-  >
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 30 }}>
-      {[
-        { label: "Timetable Pic", type: "file", setter: setTimetableImage, color: "#C3FFAD" },
-        { label: "Attendance Pic", type: "file", setter: setAttendanceImage, color: "#FFADF0" },
-        { label: "When do exams start?", type: "date", setter: setExamDate, color: "#ADF0FF" },
-      ].map((input) => (
-        <label
-          key={input.label}
+      {/* HEADER UNCHANGED */}
+      <header style={{ textAlign: "center", marginBottom: 50, position: "relative" }}> 
+        <div style={{ display: 'inline-block', padding: '4px 12px', background: '#FFD600', border: '3px solid #1A1A1A', transform: 'rotate(-2deg) translateY(10px)', fontWeight: 900, fontSize: 14, boxShadow: '4px 4px 0px #1A1A1A', zIndex: 2, position: 'relative' }}> 
+          THE ULTIMATE HACK 
+        </div>
+        <h1 style={{ fontSize: "clamp(2.2rem, 10vw, 4.5rem)", fontWeight: 900, margin: "0 auto", lineHeight: 0.9, textTransform: "uppercase", letterSpacing: "-2px", color: "#1A1A1A", }} >
+           Smart <br /> 
+           <span style={{ color: '#6366f1', textDecoration: 'underline wavy #FF6B6B' }}>
+            Bunker</span> 
+        </h1> <p style={{ marginTop: 20, fontSize: 18, fontWeight: 500, fontStyle: 'italic', color: "#4A4A4A" }}> 
+          "Because 100% attendance is a myth." 
+             </p>
+      </header>
+      <section
+        style={{
+          background: "#fff",
+          border: "4px solid #1A1A1A",
+          boxShadow: "12px 12px 0px #1A1A1A",
+          padding: "clamp(20px, 5vw, 40px)",
+          marginBottom: 60,
+        }}
+      >
+        <div
           style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 10,
-            fontWeight: 800,
-            fontSize: 16,
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+            gap: 30,
           }}
         >
-          <span style={{ background: input.color, display: 'inline-block', width: 'fit-content', padding: '0 5px' }}>
-            {input.label}
-          </span>
-          <input
-            type={input.type}
-            onChange={(e) =>
-              input.type === "file"
-                ? input.setter(e.target.files?.[0] || null)
-                : input.setter(e.target.value)
-            }
-            style={{
-              padding: "12px",
-              border: "3px solid #1A1A1A",
-              borderRadius: "0px",
-              background: "#fff",
-              fontSize: 15,
-              fontWeight: 600,
-              outline: 'none',
-              boxShadow: 'inset 4px 4px 0px #f0f0f0'
-            }}
-          />
-        </label>
-      ))}
-    </div>
+          {/* FIX: use typed inputs instead of inline array */}
+          {inputs.map((input) => (
+            <label
+              key={input.label}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+                fontWeight: 800,
+                fontSize: 16,
+              }}
+            >
+              <span
+                style={{
+                  background: input.color,
+                  display: "inline-block",
+                  width: "fit-content",
+                  padding: "0 5px",
+                }}
+              >
+                {input.label}
+              </span>
 
-    <button
-      onClick={handleAnalyze}
-      disabled={loading}
-      style={{
-        width: "100%",
-        marginTop: 40,
-        padding: "20px",
-        background: "#1A1A1A",
-        color: "#fff",
-        fontWeight: 900,
-        fontSize: 20,
-        border: "none",
-        cursor: "pointer",
-        transition: "all 0.1s",
-        textTransform: "uppercase",
-        letterSpacing: "1px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 15
-      }}
-      onMouseDown={(e) => e.currentTarget.style.transform = "translate(4px, 4px)"}
-      onMouseUp={(e) => e.currentTarget.style.transform = "translate(0, 0)"}
-    >
-      {loading ? "CRUNCHING DATA..." : "CAN I BUNK? →"}
-    </button>
-  </section>
+              <input
+                type={input.type}
+                onChange={(e) => handleInputChange(input, e)}
+                value={input.type === "date" ? examDate : undefined} // FIX
+                style={{
+                  padding: "12px",
+                  border: "3px solid #1A1A1A",
+                  background: "#fff",
+                  fontSize: 15,
+                  fontWeight: 600,
+                }}
+              />
+            </label>
+          ))}
+        </div>
+
+        <button
+          onClick={handleAnalyze}
+          disabled={loading}
+          style={{
+            width: "100%",
+            marginTop: 40,
+            padding: "20px",
+            background: "#1A1A1A",
+            color: "#fff",
+            fontWeight: 900,
+            fontSize: 20,
+            cursor: "pointer",
+          }}
+        >
+          {loading ? "CRUNCHING DATA..." : "CAN I BUNK? →"}
+        </button>
+      </section>
+
 
   {/* RESULTS SECTION */}
   {results.length > 0 && (
@@ -375,6 +418,20 @@ Return ONLY JSON in this exact format:
       </div>
     </div>
   )}
+  <footer
+  style={{
+    marginTop: 80,
+    paddingTop: 20,
+    borderTop: "2px dashed #1A1A1A",
+    textAlign: "center",
+    fontSize: 14,
+    fontStyle: "italic",
+    color: "#555",
+  }}
+>
+  AI isn’t always right — don’t blindly trust it. Be safe.
+</footer>
+
 </main>
 
 
